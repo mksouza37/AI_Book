@@ -381,90 +381,124 @@ agente_agendamento = Agent(
 # ======================
 # Message Processing
 # ======================
-def processar_mensagem(mensagem: str, numero: str, primeira_vez: bool = False):
+def processar_mensagem(mensagem: str, numero: str, primeira_vez: bool = True):
     """Processa mensagens em português para agendar/cancelar ou encaminhar"""
     try:
+        # Enviar saudação inicial se for primeiro contato
         if primeira_vez:
             enviar_saudacao_inicial(numero)
             time.sleep(2)
 
-        logger.info(f"Processing message: {mensagem} for {numero}")
+        logger.info(f"Processando mensagem: {mensagem} para {numero}")
 
-        # Check message type
-        palavras_agendamento = ["agendar", "marcar", "horário", "hora", "reunião", "consulta", "visita"]
-        palavras_cancelamento = ["cancelar", "desmarcar", "remover", "excluir"]
-        palavras_horarios = ["horários", "horarios", "disponíveis", "disponiveis", "vagas", "abertos"]
-        palavras_precos = ["preços", "precos", "valores", "tabela", "serviços", "servicos", "menu", "cardápio",
-                           "cardapio"]
-
+        # --- 1. PRIMEIRO VERIFICA SE É PEDIDO DE SERVIÇOS/PREÇOS ---
+        servicos_keywords = ["serviços", "servicos", "preços", "precos", "valores", "tabela", "menu", "cardápio",
+                             "cardapio"]
         mensagem_lower = mensagem.lower()
-        eh_agendamento = any(palavra in mensagem_lower for palavra in palavras_agendamento)
-        eh_cancelamento = any(palavra in mensagem_lower for palavra in palavras_cancelamento)
-        eh_horarios = any(palavra in mensagem_lower for palavra in palavras_horarios)
-        eh_precos = any(palavra in mensagem_lower for palavra in palavras_precos)
 
-        # Handle price list request
-        if eh_precos:
+        if any(palavra in mensagem_lower for palavra in servicos_keywords):
             try:
-                enviar_mensagem_whatsapp(
-                    "📋 *Aqui está nossa lista de serviços/preços!*\n\n"
-                    "🔹 *Como agendar:*\n"
-                    "Responda com: *\"Quero agendar para [dia] às [hora]\"*\n\n"
-                    "📌 *Exemplo:*\n"
-                    "*\"Quero agendar para sexta às 15h\"*",
-                    numero,
-                    media_url=PRICE_LIST_PDF_URL
+                client = Client(
+                    os.getenv('TWILIO_ACCOUNT_SID'),
+                    os.getenv('TWILIO_AUTH_TOKEN')
                 )
+                client.messages.create(
+                    media_url=[PRICE_LIST_PDF_URL],
+                    from_=os.getenv('TWILIO_WHATSAPP_NUMBER'),
+                    to=f"whatsapp:{numero.lstrip('+')}",
+                    body=(
+                        "📋 *Aqui está nossa lista de serviços/preços!*\n\n"
+                        "🔹 *Como agendar:*\n"
+                        "Responda com: *\"Quero agendar para [dia] às [hora]\"*\n\n"
+                        "📌 *Exemplo:*\n"
+                        "*\"Quero agendar para sexta às 15h\"*"
+                    )
+                )
+                return  # SAIR após enviar a lista
             except Exception as e:
-                error_msg = "❌ *Não consegui enviar o PDF no momento*"
+                enviar_mensagem_whatsapp("❌ *Não consegui enviar o PDF no momento*", numero)
+                return
+
+        # --- 2. DEPOIS VERIFICA SE É AGENDAMENTO ---
+        palavras_agendamento = ["agendar", "marcar", "reunião", "consulta", "visita"]
+        palavras_tempo = ["horário", "horario", "hora", "às", "as", "dia"]
+
+        # Requer PELO MENOS 1 palavra de agendamento E 1 de tempo
+        if (any(palavra in mensagem_lower for palavra in palavras_agendamento) and
+                any(palavra in mensagem_lower for palavra in palavras_tempo)):
+
+            # Processamento normal de agendamento
+            data_atual = datetime.now().strftime("%Y-%m-%d")
+
+            exemplos = """
+            EXEMPLOS VÁLIDOS:
+            - AGENDAR: "marcar reunião amanhã às 14h sobre o projeto X"
+            - CANCELAR: "cancelar a reunião de quinta-feira às 10h"
+            """
+
+            tarefa = Task(
+                description=(
+                    f"Data atual: {data_atual}\n"
+                    f"Mensagem recebida: '{mensagem}'\n"
+                    f"{exemplos}\n"
+                    "RETORNE APENAS UM OBJETO JSON VÁLIDO COM ESTES CAMPOS:\n"
+                    "{\n"
+                    '  "action": "criar" ou "cancelar",\n'
+                    '  "time_iso": "Data/hora ISO com timezone",\n'
+                    '  "summary": "Título da reunião",\n'
+                    '  "duration_hours": 1\n'
+                    "}"
+                ),
+                agent=agente_agendamento,
+                expected_output="APENAS o JSON válido sem nenhum texto adicional",
+                output_json=EventDetails
+            )
+
+            crew = Crew(
+                agents=[agente_agendamento],
+                tasks=[tarefa],
+                process=Process.sequential,
+                verbose=True
+            )
+
+            resultado = crew.kickoff()
+            logger.info(f"Resultado do crew: {resultado}")
+
+            try:
+                if isinstance(resultado, dict):
+                    event_data = resultado
+                else:
+                    output_str = str(resultado).strip()
+                    output_str = output_str.replace("'", '"').replace("None", "null")
+                    event_data = json.loads(output_str)
+
+                # Valida campos obrigatórios
+                required_fields = ['action', 'time_iso']
+                if not all(field in event_data for field in required_fields):
+                    raise ValueError("Faltam campos obrigatórios")
+
+                event_details = {
+                    "action": str(event_data['action']),
+                    "time_iso": str(event_data['time_iso'])
+                }
+
+                if 'summary' in event_data and event_data['summary'] is not None:
+                    event_details['summary'] = str(event_data['summary'])
+
+                if event_data['action'] == 'criar':
+                    event_details['duration_hours'] = float(event_data.get('duration_hours', 1))
+
+                # Executa a ação
+                resultado_calendario = calendar_tool.run(event_details)
+                enviar_mensagem_whatsapp(resultado_calendario, numero)
+
+            except Exception as e:
+                error_msg = f"❌ Erro: {str(e)}"
                 enviar_mensagem_whatsapp(error_msg, numero)
 
-        # Handle free slots request
-        if eh_horarios:
-            import re
-            date_match = re.search(r'(\d{1,2})(?:\s*\/\s*(\d{1,2}))?', mensagem)
-            if date_match:
-                day = date_match.group(1)
-                month = date_match.group(2) if date_match.group(2) else None
-                date_str = f"{day}/{month}" if month else day
-
-                try:
-                    free_slots = calendar_tool._get_free_slots(date_str)
-
-                    if free_slots.get('is_sunday'):
-                        resposta = (
-                            f"📅 *Domingo - {free_slots['date']}*\n\n"
-                            "⛔ *Não atendemos aos domingos.*\n\n"
-                            "Por favor, escolha outro dia da semana."
-                        )
-                    elif not free_slots['free_slots']:
-                        resposta = (
-                            f"📅 *Horários para {free_slots['date']}*\n\n"
-                            "❌ *Não há horários disponíveis neste dia.*"
-                        )
-                    else:
-                        slots_text = "\n".join(
-                            f"🕒 *{slot['start']} - {slot['end']}*"
-                            for slot in free_slots['free_slots']
-                        )
-
-                        resposta = (
-                            f"📅 *Horários Disponíveis - {free_slots['date']}*\n\n"
-                            f"{slots_text}\n\n"
-                            "🔹 *Como agendar:*\n"
-                            f"Responda com: *\"Quero o horário das XXh do dia {free_slots['date']}\"*"
-                        )
-
-                    enviar_mensagem_whatsapp(resposta, numero)
-                    return
-
-                except Exception as e:
-                    error_msg = "❌ *Não consegui verificar os horários*"
-                    enviar_mensagem_whatsapp(error_msg, numero)
-                    return
-
-        if not (eh_agendamento or eh_cancelamento or eh_horarios or eh_precos):
-            # Forward message to Claudia
+        # --- 3. SE NÃO FOR NENHUM DOS CASOS ACIMA, ENCAMINHA ---
+        else:
+            # Encaminhar mensagem para a Cláudia
             mensagem_encaminhada = (
                 "📩 *Novo Pedido de Cliente*\n\n"
                 f"*Mensagem:* {mensagem}\n"
@@ -473,87 +507,21 @@ def processar_mensagem(mensagem: str, numero: str, primeira_vez: bool = False):
             )
             enviar_mensagem_whatsapp(mensagem_encaminhada, "+5511981583453")
 
+            # Responder ao cliente
             resposta_cliente = (
                 "📨 *Mensagem Encaminhada!*\n\n"
-                "Sua solicitação foi enviada diretamente para a Cláudia.\n"
-                "Ela responderá pessoalmente em breve!"
+                "Eu sou especializada apenas em agendamentos.\n"
+                "Acabei de enviar sua solicitação diretamente para a Cláudia.\n"
+                "Ela responderá pessoalmente em breve!\n\n"
+                "📌 Se precisar agendar, digite:\n"
+                "*\"Quero agendar [dia] às [hora]\"*\n"
+                "Ex: *\"Quero agendar sexta às 15h\"*"
             )
             enviar_mensagem_whatsapp(resposta_cliente, numero)
-            return
-
-        # Process scheduling/cancellation
-        data_atual = datetime.now().strftime("%Y-%m-%d")
-
-        exemplos = """
-        EXEMPLOS VÁLIDOS:
-        - AGENDAR: "marcar reunião amanhã às 14h sobre o projeto X"
-        - CANCELAR: "cancelar a reunião de quinta-feira às 10h"
-        """
-
-        tarefa = Task(
-            description=(
-                f"Data atual: {data_atual}\n"
-                f"Mensagem recebida: '{mensagem}'\n"
-                f"{exemplos}\n"
-                "RETORNE APENAS UM OBJETO JSON VÁLIDO COM ESTES CAMPOS:\n"
-                "{\n"
-                '  "action": "criar" ou "cancelar",\n'
-                '  "time_iso": "Data/hora ISO com timezone",\n'
-                '  "summary": "Título da reunião",\n'
-                '  "duration_hours": 1\n'
-                "}"
-            ),
-            agent=agente_agendamento,
-            expected_output="APENAS o JSON válido sem nenhum texto adicional",
-            output_json=EventDetails
-        )
-
-        crew = Crew(
-            agents=[agente_agendamento],
-            tasks=[tarefa],
-            process=Process.sequential,
-            verbose=True
-        )
-
-        resultado = crew.kickoff()
-        logger.info(f"Crew result: {resultado}")
-
-        try:
-            if isinstance(resultado, dict):
-                event_data = resultado
-            else:
-                output_str = str(resultado).strip()
-                output_str = output_str.replace("'", '"').replace("None", "null")
-                event_data = json.loads(output_str)
-
-            # Validate required fields
-            required_fields = ['action', 'time_iso']
-            if not all(field in event_data for field in required_fields):
-                raise ValueError("Missing required fields")
-
-            event_details = {
-                "action": str(event_data['action']),
-                "time_iso": str(event_data['time_iso'])
-            }
-
-            if 'summary' in event_data and event_data['summary'] is not None:
-                event_details['summary'] = str(event_data['summary'])
-
-            if event_data['action'] == 'criar':
-                event_details['duration_hours'] = float(event_data.get('duration_hours', 1))
-
-            # Execute the action
-            resultado_calendario = calendar_tool.run(event_details)
-            enviar_mensagem_whatsapp(resultado_calendario, numero)
-
-        except Exception as e:
-            error_msg = f"❌ Erro: {str(e)}"
-            enviar_mensagem_whatsapp(error_msg, numero)
 
     except Exception as e:
-        logger.error(f"General processing error: {str(e)}", exc_info=True)
+        logger.error(f"Erro geral no processamento: {str(e)}", exc_info=True)
         enviar_mensagem_whatsapp("❌ Ocorreu um erro ao processar sua mensagem.", numero)
-
 
 # ======================
 # Flask Routes
