@@ -1,0 +1,6 @@
+.idea/
+credentials.json
+.env
+__pycache__/
+.venv/
+*.log

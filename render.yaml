@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: whatsapp-booking-bot
+    env: python
+    plan: free
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python app.py"
+    envVars:
+      - key: TWILIO_ACCOUNT_SID
+        value: YOUR_SID
+      - key: TWILIO_AUTH_TOKEN
+        value: YOUR_TOKEN
+      - key: TWILIO_WHATSAPP_NUMBER
+        value: whatsapp:+14155238886
+      - key: GOOGLE_CALENDAR_ID
+        value: your_calendar_id
+      - key: OPENAI_API_KEY
+        value: your_openai_api_key
