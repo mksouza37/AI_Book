@@ -71,8 +71,8 @@ class GoogleCalendarTool(BaseTool):
                     scopes=['https://www.googleapis.com/auth/calendar']
                 )
             # Using environment variable for Render deployment
-            elif os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON"):
-                service_account_info = json.loads(os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON"))
+            elif os.getenv("GOOGLE_CREDENTIALS"):  # CHANGED THIS LINE
+                service_account_info = json.loads(os.getenv("GOOGLE_CREDENTIALS"))  # CHANGED THIS LINE
                 creds = service_account.Credentials.from_service_account_info(
                     service_account_info,
                     scopes=['https://www.googleapis.com/auth/calendar']
@@ -85,7 +85,6 @@ class GoogleCalendarTool(BaseTool):
         except Exception as e:
             logger.error(f"Error setting up Google Calendar service: {str(e)}")
             raise
-
     def _format_date_pt(self, time_iso: str) -> tuple:
         """Helper to format date in Portuguese"""
         data_obj = datetime.fromisoformat(time_iso)
