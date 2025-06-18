@@ -328,6 +328,7 @@ def enviar_saudacao_inicial(numero: str):
     )
     enviar_mensagem_whatsapp(mensagem, numero)
 
+
 def enviar_mensagem_whatsapp(mensagem: str, numero: str, media_url=None):
     try:
         client = Client(
@@ -335,27 +336,45 @@ def enviar_mensagem_whatsapp(mensagem: str, numero: str, media_url=None):
             os.getenv('TWILIO_AUTH_TOKEN')
         )
 
-        # Clean the number format
-        numero_limpo = numero.strip().replace(" ", "").replace("-", "").replace("(", "").replace(")", "")
+        # Clean number format (critical fix)
+        numero_limpo = (
+            numero.strip()
+            .replace(" ", "")
+            .replace("-", "")
+            .replace("(", "")
+            .replace(")", "")
+        )
         if not numero_limpo.startswith("whatsapp:+55"):
-            numero_limpo = f"whatsapp:+55{numero_limpo.lstrip('+55')}"
+            if numero_limpo.startswith("+55"):
+                numero_limpo = f"whatsapp:{numero_limpo}"
+            else:
+                numero_limpo = f"whatsapp:+55{numero_limpo.lstrip('55')}"
 
-        # Create message with optional media
-        message_params = {
+        # Prepare message
+        msg_params = {
             'body': mensagem,
             'from_': os.getenv('TWILIO_WHATSAPP_NUMBER'),
             'to': numero_limpo
         }
 
+        # Handle media (with Dropbox fix)
         if media_url:
-            message_params['media_url'] = [media_url]
+            if "dropbox.com" in media_url:
+                media_url = (
+                    media_url.replace("www.dropbox.com", "dl.dropboxusercontent.com")
+                    .replace("?dl=0", "?dl=1")
+                    .split("&st=")[0]  # Remove session tokens
+                )
+            msg_params['media_url'] = [media_url]
 
-        client.messages.create(**message_params)
+        # Send message
+        message = client.messages.create(**msg_params)
+        logger.info(f"Message sent to {numero_limpo} | SID: {message.sid}")
+        return True
 
     except Exception as e:
-        logger.error(f"Error sending WhatsApp message: {str(e)}")
-        raise  # Re-raise to handle in calling function
-
+        logger.error(f"Failed to send to {numero}: {str(e)}")
+        return False
 # ======================
 # CrewAI Setup
 # ======================
@@ -396,27 +415,17 @@ def processar_mensagem(mensagem: str, numero: str, primeira_vez: bool = True):
                              "cardapio"]
         mensagem_lower = mensagem.lower()
 
+        # In processar_mensagem(), replace the service list section with:
         if any(palavra in mensagem_lower for palavra in servicos_keywords):
-            try:
-                client = Client(
-                    os.getenv('TWILIO_ACCOUNT_SID'),
-                    os.getenv('TWILIO_AUTH_TOKEN')
-                )
-                client.messages.create(
-                    media_url=[PRICE_LIST_PDF_URL],
-                    from_=os.getenv('TWILIO_WHATSAPP_NUMBER'),
-                    to=f"whatsapp:{numero.lstrip('+')}",
-                    body=(
-                        "📋 *Aqui está nossa lista de serviços/preços!*\n\n"
-                        "🔹 *Como agendar:*\n"
-                        "Responda com: *\"Quero agendar para [dia] às [hora]\"*\n\n"
-                        "📌 *Exemplo:*\n"
-                        "*\"Quero agendar para sexta às 15h\"*"
-                    )
-                )
-                return  # SAIR após enviar a lista
-            except Exception as e:
-                enviar_mensagem_whatsapp("❌ *Não consegui enviar o PDF no momento*", numero)
+            pdf_url = "https://dl.dropboxusercontent.com/scl/fi/5ppj1wvzj6lo49lz3kjw4/services_pricelist_1.pdf?rlkey=a8756on4fqhqpnfmbhfo07mhj&dl=1"
+            if enviar_mensagem_whatsapp(
+                    "📋 Enviando lista de serviços...",
+                    numero,
+                    media_url=pdf_url
+            ):
+                return
+            else:
+                enviar_mensagem_whatsapp("❌ Não consegui enviar o PDF", numero)
                 return
 
         # --- 2. DEPOIS VERIFICA SE É AGENDAMENTO ---
