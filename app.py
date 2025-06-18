@@ -328,28 +328,33 @@ def enviar_saudacao_inicial(numero: str):
     )
     enviar_mensagem_whatsapp(mensagem, numero)
 
-def enviar_mensagem_whatsapp(mensagem: str, numero: str):
+def enviar_mensagem_whatsapp(mensagem: str, numero: str, media_url=None):
     try:
         client = Client(
             os.getenv('TWILIO_ACCOUNT_SID'),
             os.getenv('TWILIO_AUTH_TOKEN')
         )
 
-        # Clean the number: remove spaces, parentheses, etc.
+        # Clean the number format
         numero_limpo = numero.strip().replace(" ", "").replace("-", "").replace("(", "").replace(")", "")
-
-        # Ensure it starts with 'whatsapp:+55' (Brazil)
         if not numero_limpo.startswith("whatsapp:+55"):
             numero_limpo = f"whatsapp:+55{numero_limpo.lstrip('+55')}"
 
-        client.messages.create(
-            body=mensagem,
-            from_=os.getenv('TWILIO_WHATSAPP_NUMBER'),
-            to=numero_limpo  # Use cleaned number
-        )
+        # Create message with optional media
+        message_params = {
+            'body': mensagem,
+            'from_': os.getenv('TWILIO_WHATSAPP_NUMBER'),
+            'to': numero_limpo
+        }
+
+        if media_url:
+            message_params['media_url'] = [media_url]
+
+        client.messages.create(**message_params)
+
     except Exception as e:
         logger.error(f"Error sending WhatsApp message: {str(e)}")
-
+        raise  # Re-raise to handle in calling function
 
 # ======================
 # CrewAI Setup
@@ -376,7 +381,7 @@ agente_agendamento = Agent(
 # ======================
 # Message Processing
 # ======================
-def processar_mensagem(mensagem: str, numero: str, primeira_vez: bool = True):
+def processar_mensagem(mensagem: str, numero: str, primeira_vez: bool = False):
     """Processa mensagens em português para agendar/cancelar ou encaminhar"""
     try:
         if primeira_vez:
@@ -401,27 +406,18 @@ def processar_mensagem(mensagem: str, numero: str, primeira_vez: bool = True):
         # Handle price list request
         if eh_precos:
             try:
-                client = Client(
-                    os.getenv('TWILIO_ACCOUNT_SID'),
-                    os.getenv('TWILIO_AUTH_TOKEN')
+                enviar_mensagem_whatsapp(
+                    "📋 *Aqui está nossa lista de serviços/preços!*\n\n"
+                    "🔹 *Como agendar:*\n"
+                    "Responda com: *\"Quero agendar para [dia] às [hora]\"*\n\n"
+                    "📌 *Exemplo:*\n"
+                    "*\"Quero agendar para sexta às 15h\"*",
+                    numero,
+                    media_url=PRICE_LIST_PDF_URL
                 )
-                client.messages.create(
-                    media_url=[PRICE_LIST_PDF_URL],
-                    from_=os.getenv('TWILIO_WHATSAPP_NUMBER'),
-                    to=f"whatsapp:{numero.lstrip('+')}",
-                    body=(
-                        "📋 *Aqui está nossa lista de serviços/preços!*\n\n"
-                        "🔹 *Como agendar:*\n"
-                        "Responda com: *\"Quero agendar para [dia] às [hora]\"*\n\n"
-                        "📌 *Exemplo:*\n"
-                        "*\"Quero agendar para sexta às 15h\"*"
-                    )
-                )
-                return
             except Exception as e:
                 error_msg = "❌ *Não consegui enviar o PDF no momento*"
                 enviar_mensagem_whatsapp(error_msg, numero)
-                return
 
         # Handle free slots request
         if eh_horarios:
@@ -596,6 +592,12 @@ def webhook():
 # Main Entry Point
 # ======================
 if __name__ == "__main__":
+
+    # Uncomment this line to run local tests
+    # Test PDF sending
+    #enviar_mensagem_whatsapp("Testing PDF", "+5511981583453",
+    #                         media_url="https://dl.dropboxusercontent.com/scl/fi/5ppj1wvzj6lo49lz3kjw4/services_pricelist_1.pdf?rlkey=a8756on4fqhqpnfmbhfo07mhj&dl=1")
+
     try:
         # Initialize services
         calendar_tool._setup_service()
