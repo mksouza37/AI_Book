@@ -328,18 +328,24 @@ def enviar_saudacao_inicial(numero: str):
     )
     enviar_mensagem_whatsapp(mensagem, numero)
 
-
 def enviar_mensagem_whatsapp(mensagem: str, numero: str):
-    """Envia mensagem via WhatsApp (Twilio)"""
     try:
         client = Client(
             os.getenv('TWILIO_ACCOUNT_SID'),
             os.getenv('TWILIO_AUTH_TOKEN')
         )
+
+        # Clean the number: remove spaces, parentheses, etc.
+        numero_limpo = numero.strip().replace(" ", "").replace("-", "").replace("(", "").replace(")", "")
+
+        # Ensure it starts with 'whatsapp:+55' (Brazil)
+        if not numero_limpo.startswith("whatsapp:+55"):
+            numero_limpo = f"whatsapp:+55{numero_limpo.lstrip('+55')}"
+
         client.messages.create(
             body=mensagem,
             from_=os.getenv('TWILIO_WHATSAPP_NUMBER'),
-            to=f"whatsapp:{numero.lstrip('+')}"
+            to=numero_limpo  # Use cleaned number
         )
     except Exception as e:
         logger.error(f"Error sending WhatsApp message: {str(e)}")
